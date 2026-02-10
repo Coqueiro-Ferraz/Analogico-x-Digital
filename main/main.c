@@ -1,6 +1,6 @@
 /*
 * Esse programa cria sinais analógicos e digitais para serem verificados por um osciloscópio
-*   
+*                                   ________________________________
 *                                  |EN          ________     GPIO 23|
 *                                  |GPI 36     |        |    GPIO 22|
 *                                  |GPI 39     | ESP32  |    GPIO  1|
@@ -12,11 +12,13 @@
 *                        SENOIDE - |GPIO 26                  GPIO 17| - UART "OFF"
 *                                  |GPIO 27                  GPIO 16|
 *                                  |GPIO 14                  GPIO  4| - MORSE
-*                                  |GPIO 12                  GPIO  2| - TOGGLE
-*                                  |GPIO 13                  GPIO 15|
+*                                  |GPIO 12                  GPIO  2| - LED
+*                                  |GPIO 13                  GPIO 15| - TOGGLE
 *                                  |GND                          GND| - Ponta de referência
-*                                  |VIN                         3.3V| - Medição de tensão
-*
+*                                  |VIN                         3.3V|
+*                                  |                                |
+*                                  |              ____              |
+*                                  |_____________|____|_____[0]_____|
 */
 
 
@@ -32,13 +34,14 @@
 #include "esp_system.h"
 #include <time.h>
 
-#define GPIO_TOGGLE     2
+#define GPIO_TOGGLE     15
 #define GPIO_MORSE      4
 #define GPIO_PWM_25     18
 #define GPIO_PWM_RAMPA  19
 
 #define UART_TXD 17
 #define UART_RXD 16
+#define UART_PORT UART_NUM_2
 
 #define PI 3.14159265
 
@@ -101,18 +104,21 @@ void task_morse(void *arg)
 void task_uart(void *arg)
 {
     const uart_config_t uart_config = {
-        .baud_rate = 9600,//115200,
+        .baud_rate = 9600,                 // Baud mais fácil de visualizar no osciloscópio
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT
     };
 
-    uart_driver_install(UART_NUM_2, 1024, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_2, &uart_config);
+    uart_driver_install(UART_PORT, 1024, 0, 0, NULL, 0);
+    uart_param_config(UART_PORT, &uart_config);
+    uart_set_pin(UART_PORT, UART_TXD, UART_RXD,
+                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
     while (1) {
-        uart_write_bytes(UART_NUM_2, "OFF", 5);
+        uart_write_bytes(UART_PORT, "OFF\n", 4);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -124,9 +130,18 @@ void task_dac_random(void *arg)
 {
     dac_output_enable(DAC_CHANNEL_1); // GPIO 25
     srand(time(NULL)); 
+    int value = 128;                  // Começa no meio da escala
+    int delta_max = 25;               // 13 ≈ 5% de 255   
+
     while (1) {
-        uint8_t value = rand() % 256;
-        dac_output_voltage(DAC_CHANNEL_1, value);
+        //uint8_t value = rand() % 256;
+        int delta = (rand() % (2 * delta_max + 1)) - delta_max;
+        value += delta;
+
+        if (value > 255) value = 255;
+        if (value < 0)   value = 0;
+
+        dac_output_voltage(DAC_CHANNEL_1, (uint8_t)value);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
@@ -210,10 +225,23 @@ void app_main(void)
     };
     ledc_channel_config(&pwm_rampa);
 
+    gpio_set_direction(2,GPIO_MODE_OUTPUT);
+    gpio_set_direction(0,GPIO_MODE_INPUT);
+    gpio_set_pull_mode(0,GPIO_PULLUP_ONLY);
+    
+
     xTaskCreate(task_toggle,     "toggle",     2048, NULL, 1, NULL);
     xTaskCreate(task_morse,      "morse",      2048, NULL, 1, NULL);
     xTaskCreate(task_uart,       "uart",       2048, NULL, 1, NULL);
     xTaskCreate(task_dac_random, "dac_rand",   2048, NULL, 1, NULL);
     xTaskCreate(task_dac_sine,   "dac_sine",   2048, NULL, 1, NULL);
     xTaskCreate(task_pwm_rampa,  "pwm_rampa",  2048, NULL, 1, NULL);
+
+    while(1)
+    {
+        static bool ligado = false;
+        if(!gpio_get_level(0)) ligado = !ligado;
+        gpio_set_level(2,ligado);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
 }
